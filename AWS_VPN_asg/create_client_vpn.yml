@@ -1,0 +1,229 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  EC2AMIARN:
+    Type: AWS::EC2::Image::Id
+    Description: EC2 AMI ARN
+  EC2InstanceType:
+    Type: String
+    Default: t3.micro
+  ClientCertificateARN:
+    Type: String
+    Description: ClientCertificateARN
+  ServerCertificateARN:
+    Type: String
+    Description: ServerCertificateARN
+  VPCCidrBlock:
+    Type: String
+    Default: 10.10.0.0/16
+    Description: VPCCidrBlock(x.x.x.x/xx)
+  VPNSubnetCidrBlock:
+    Type: String
+    Default: 10.10.1.0/24
+    Description: VPNSubnetCidrBlock(x.x.x.x/xx)
+  VPNClientCidrBlock:
+    Type: String
+    Default: 10.20.0.0/22
+    Description: VPNClientCidrBlock(x.x.x.x/xx)
+  AutoScalingGroupMinSize:
+    Type: String
+    Default: '0'
+  AutoScalingGroupMaxSize:
+    Type: String
+    Default: '20'
+  AutoScalingGroupDefaultSize:
+    Type: String
+    Default: '1'
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'EC2 Configration'
+        Parameters:
+          - EC2AMIARN
+          - EC2InstanceType
+      - Label:
+          default: 'VPC Configration'
+        Parameters:
+          - VPCCidrBlock
+          - VPNSubnetCidrBlock
+          - VPNClientCidrBlock
+      - Label:
+          default: ' AutoScalingGroup Configration'
+        Parameters:
+          - AutoScalingGroupMinSize
+          - AutoScalingGroupMaxSize
+          - AutoScalingGroupDefaultSize
+      - Label:
+          default: 'Certificate Configration'
+        Parameters:
+          - ClientCertificateARN
+          - ServerCertificateARN
+Resources:
+  # VPC
+  VPNVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCidrBlock
+      Tags:
+        - Key: Name
+          Value: VPNVPC
+        - Key: created
+          Value: created by Cloud Formation
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: VPNVPC-IGW
+        - Key: created
+          Value: created by Cloud Formation
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPNVPC
+      InternetGatewayId: !Ref InternetGateway
+  # public Subnet
+  VPNSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPNVPC
+      CidrBlock: !Ref VPNSubnetCidrBlock
+      Tags:
+        - Key: Name
+          Value: VPNVPC-VPNSubnet
+        - Key: created
+          Value: created by Cloud Formation
+  # route table
+  VPN2EC2SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: VPNSecurityGroup
+      GroupName: VPN2EC2
+      VpcId: !Ref VPNVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref VPNSubnetCidrBlock
+        - IpProtocol: tcp
+          FromPort: 5901
+          ToPort: 5901
+          CidrIp: !Ref VPNSubnetCidrBlock
+  VPNSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPNVPC
+      Tags:
+        - Key: Name
+          Value: VPNVPC-Subnet-RouteTable
+        - Key: created
+          Value: created by Cloud Formation
+  VPNSubnetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref VPNSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref VPNSubnetRouteTable
+      SubnetId: !Ref VPNSubnet
+  # VPN Endpoint
+  VPNEndpoint:
+    Type: AWS::EC2::ClientVpnEndpoint
+    Properties:
+      AuthenticationOptions:
+        - Type: certificate-authentication
+          MutualAuthentication:
+            ClientRootCertificateChainArn: !Ref ClientCertificateARN
+      ClientCidrBlock: !Ref VPNClientCidrBlock
+      ConnectionLogOptions:
+        Enabled: False
+      ServerCertificateArn: !Ref ServerCertificateARN
+  ClientVpnTargetNetworkAssociation:
+    Type: AWS::EC2::ClientVpnTargetNetworkAssociation
+    Properties:
+      ClientVpnEndpointId: !Ref VPNEndpoint
+      SubnetId: !Ref VPNSubnet
+  ClientVpnRoute:
+    DependsOn: ClientVpnTargetNetworkAssociation
+    Type: AWS::EC2::ClientVpnRoute
+    Properties:
+      ClientVpnEndpointId: !Ref VPNEndpoint
+      Description: To Internet
+      DestinationCidrBlock: 0.0.0.0/0
+      TargetVpcSubnetId: !Ref VPNSubnet
+  ClientVpnAuthorizationToVPCRule:
+    Type: AWS::EC2::ClientVpnAuthorizationRule
+    Properties:
+      AuthorizeAllGroups: True
+      ClientVpnEndpointId: !Ref VPNEndpoint
+      Description: To VPC
+      TargetNetworkCidr: !GetAtt VPNVPC.CidrBlock
+  ClientVpnAuthorizationToInternetRule:
+    Type: AWS::EC2::ClientVpnAuthorizationRule
+    Properties:
+      AuthorizeAllGroups: True
+      ClientVpnEndpointId: !Ref VPNEndpoint
+      Description: To Internet
+      TargetNetworkCidr: 0.0.0.0/0
+  # IAM Role
+  S3AttachEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: S3AttachEC2Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: SecretsManagerRead
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource: '*'
+  S3AttachEC2RoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: '/'
+      Roles:
+        - !Ref S3AttachEC2Role
+  # AutoScalingGroup
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !Ref S3AttachEC2RoleInstanceProfile
+      ImageId: !Ref EC2AMIARN
+      InstanceType: !Ref EC2InstanceType
+      LaunchConfigurationName: AmazonLinux_gui
+      SecurityGroups:
+        - !Ref VPN2EC2SG
+  AutoScalingGroup:
+    DependsOn: LaunchConfiguration
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: AutoScalingGroup
+      AvailabilityZones:
+        - !GetAtt VPNSubnet.AvailabilityZone
+      DesiredCapacity: !Ref AutoScalingGroupDefaultSize
+      LaunchConfigurationName: AmazonLinux_gui
+      MaxSize: !Ref AutoScalingGroupMaxSize
+      MinSize: !Ref AutoScalingGroupMinSize
+      VPCZoneIdentifier:
+        - !Ref VPNSubnet
+
+# output
+Outputs:
+  VPNEndpointID:
+    Value: !Ref VPNEndpoint
