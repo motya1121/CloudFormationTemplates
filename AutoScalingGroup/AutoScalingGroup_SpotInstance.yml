@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  EC2AMIARN:
+    Type: AWS::EC2::Image::Id
+    Default: ami-00f045aed21a55240
+    Description: EC2 AMI ARN
+  EC2InstanceType:
+    Type: String
+    Default: t3.micro
+  SpotInstancePrice:
+    Type: String
+    Default: '0.01'
+  VPCCidrBlock:
+    Type: String
+    Default: 10.10.0.0/16
+    Description: VPCCidrBlock(x.x.x.x/xx)
+  VPCSubnetCidrBlock:
+    Type: String
+    Default: 10.10.1.0/24
+    Description: VPNSubnetCidrBlock(x.x.x.x/xx)
+  AutoScalingGroupMinSize:
+    Type: String
+    Default: '0'
+  AutoScalingGroupMaxSize:
+    Type: String
+    Default: '20'
+  AutoScalingGroupDefaultSize:
+    Type: String
+    Default: '1'
+  LaunchConfigurationName:
+    Type: String
+    Default: LaunchConfiguration
+  MyIPAddress:
+    Type: String
+    Description: x.x.x.x/32
+  SSHKeyName:
+    Type: String
+    Description: this is not Key ID. It's Key Name
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'EC2 Configration'
+        Parameters:
+          - EC2AMIARN
+          - EC2InstanceType
+          - SpotInstancePrice
+          - SSHKeyName
+      - Label:
+          default: 'VPC Configration'
+        Parameters:
+          - VPCCidrBlock
+          - VPCSubnetCidrBlock
+          - MyIPAddress
+      - Label:
+          default: ' AutoScalingGroup Configration'
+        Parameters:
+          - AutoScalingGroupMinSize
+          - AutoScalingGroupMaxSize
+          - AutoScalingGroupDefaultSize
+          - LaunchConfigurationName
+
+Resources:
+  # VPC
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCidrBlock
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+  # public Subnet
+  VPCSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref VPCSubnetCidrBlock
+  # Security Group
+  SSHFromMyIPSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: VPNSecurityGroup
+      GroupName: SSHFromMyIP
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIPAddress
+  # route table
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+  VPCSubnetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  VPCSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref VPCSubnet
+  # AutoScalingGroup
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      ImageId: !Ref EC2AMIARN
+      InstanceType: !Ref EC2InstanceType
+      SpotPrice: !Ref SpotInstancePrice
+      LaunchConfigurationName: !Ref LaunchConfigurationName
+      KeyName: !Ref SSHKeyName
+      SecurityGroups:
+        - !Ref SSHFromMyIPSG
+  AutoScalingGroup:
+    DependsOn: LaunchConfiguration
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: AutoScalingGroup
+      AvailabilityZones:
+        - !GetAtt VPCSubnet.AvailabilityZone
+      DesiredCapacity: !Ref AutoScalingGroupDefaultSize
+      LaunchConfigurationName: !Ref LaunchConfigurationName
+      MaxSize: !Ref AutoScalingGroupMaxSize
+      MinSize: !Ref AutoScalingGroupMinSize
+      VPCZoneIdentifier:
+        - !Ref VPCSubnet
